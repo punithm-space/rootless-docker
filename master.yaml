@@ -1,0 +1,18 @@
+- hosts: all
+  become: yes
+
+  vars_prompt:
+    - name: username
+      prompt: "Enter the username for rootless docker setup"
+      private: no
+
+    - name: xfs_image_size
+      prompt: "Enter XFS image size (e.g. 100G)"
+      default: "100G"
+      private: no
+
+  roles:
+    - role: rootless_docker
+#      vars:
+#        username: punith.m
+#        xfs_image_size: 200G
