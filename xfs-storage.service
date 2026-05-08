@@ -1,0 +1,36 @@
+[Unit]
+Description=Mount XFS Docker Storage for {{ username }} (loop on Weka)
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+ExecStart=/bin/bash -x -c ' \
+for i in {1..60}; do \
+  if mountpoint -q /mnt/blitz_weka2 && [ -f {{ user_xfs_img }} ] && losetup -f >/dev/null 2>&1; then \
+    break; \
+  fi; \
+  echo "Waiting for Weka + file + loop..."; \
+  sleep 2; \
+done; \
+if ! mountpoint -q /opt/docker_storage/{{ username }}/xfs_storage; then \
+  LOOPDEV=$(losetup -f --show {{ user_xfs_img }}) ;\
+  mount -o noatime,nodiratime,nodev,nosuid,logbufs=8,logbsize=256k,inode64 $LOOPDEV /opt/docker_storage/{{ username }}/xfs_storage; \
+fi; \
+echo "Mount completed. Starting monitor loop..."; \
+while true; do \
+  sleep 600; \
+  if ! mountpoint -q /opt/docker_storage/{{ username }}/xfs_storage; then \
+    echo "Mount lost! Exiting to trigger restart..."; \
+    exit 1; \
+  fi; \
+  echo  "Mount healthy"; \
+done'
+
+
+[Install]
+WantedBy=multi-user.target
