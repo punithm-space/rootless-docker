@@ -1,0 +1,7 @@
+- name: restart rootless docker
+  become_user: "{{ username }}"
+  shell: |
+    export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+    systemctl --user daemon-reexec
+    systemctl --user restart docker.service
