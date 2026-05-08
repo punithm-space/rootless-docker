@@ -1,0 +1,493 @@
+- name: Role Start Banner
+  debug:
+    msg:
+      - "=========================================="
+      - " Setting up Rootless Docker"
+      - " User: {{ username }}"
+      - "=========================================="
+
+- name: Fail if username not provided
+  fail:
+    msg: "username variable is required"
+  when: username == ""
+
+- name: Get user details
+  getent:
+    database: passwd
+    key: "{{ username }}"
+  register: user_info
+  ignore_errors: yes
+
+- name: Fail if user does not exist
+  fail:
+    msg: "Provided user doesn't exist in the current user database"
+  when: >
+    user_info is failed or
+    user_info.ansible_facts.getent_passwd is not defined or
+    user_info.ansible_facts.getent_passwd[username] is not defined
+
+- name: Set home  and image path
+  set_fact:
+    user_home: "/home/{{ username }}"
+    user_xfs_img: "/bfs/sims/{{ username }}/.xfs_storage.img"
+    #user_home: "{{ user_info.passwd[username][4] }}"
+
+# Register hostname value
+- name: Get hostname
+  command: hostname
+  register: host
+
+# -----------------------------
+# Base dependencies
+# -----------------------------
+- name: Install base dependencies
+  apt:
+    name:
+      - uidmap
+      - slirp4netns
+      - fuse-overlayfs
+      - ca-certificates
+#      - curl
+#      - gnupg
+#      - lsb-release
+    state: present
+    update_cache: yes
+
+- name: Load nf_tables module
+  modprobe:
+    name: nf_tables
+    state: present
+
+- name: Persist nf_tables module
+  lineinfile:
+    path: /etc/modules
+    line: nf_tables
+    create: yes
+
+# -----------------------------
+# Add Docker GPG key (idempotent)
+# -----------------------------
+- name: Create keyrings dir
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Add Docker GPG key
+  shell: |
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+    gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+
+# -----------------------------
+# Add Docker repo (idempotent)
+# -----------------------------
+- name: Add Docker repository
+  copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    content: |
+      deb [arch={{ ansible_architecture | replace('x86_64','amd64') }} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable
+
+# -----------------------------
+# Update apt cache
+# -----------------------------
+- name: Update apt cache
+  apt:
+    update_cache: yes
+
+# -----------------------------
+# Install docker-compose-plugin ONLY
+# -----------------------------
+- name: Install docker compose plugin
+  apt:
+    name: docker-compose-plugin
+    state: present
+
+# -----------------------------
+# Install docker bash completion
+# -----------------------------
+- name: Install docker bash completion
+  get_url:
+    url: https://raw.githubusercontent.com/docker/cli/master/contrib/completion/bash/docker
+    dest: /etc/bash_completion.d/docker
+    mode: "0644"
+
+# -----------------------------
+# SubUID/SubGID (idempotent)
+# -----------------------------
+
+# -----------------------------
+# Check if user already exists
+# -----------------------------
+- name: Check subuid entry
+  shell: "grep '^{{ username }}:' /etc/subuid || true"
+  register: subuid_check
+
+# -----------------------------
+# Get last subuid block
+# -----------------------------
+- name: Get last valid subuid entry
+  shell: "awk -F: 'NF==3 {print $0}' /etc/subuid | sort -t: -k2 -n | tail -1"
+  register: subuid_last
+  when: subuid_check.stdout == ""
+
+# -----------------------------
+# Extract subuid if entry exists
+# -----------------------------
+- name: Extract subuid parts
+  set_fact:
+    subuid_parts: "{{ subuid_last.stdout.split(':') }}"
+  when:
+    - subuid_check.stdout == ""
+    - subuid_last.stdout != ""
+
+# -----------------------------
+# Calculate next start
+# -----------------------------
+- name: Calculate next subuid start
+  set_fact:
+    subuid_start: "{{ (subuid_parts[1] | int) + (subuid_parts[2] | int) }}"
+  when:
+    - subuid_check.stdout == ""
+    - subuid_parts is defined
+    - subuid_parts | length >= 3
+
+- name: Set default subuid start
+  set_fact:
+    subuid_start: 100000
+  when:
+    - subuid_check.stdout == ""
+    - subuid_last.stdout == "" or subuid_parts | default([]) | length < 3
+
+# -----------------------------
+# Add subuid entry
+# -----------------------------
+- name: Add subuid entry
+  lineinfile:
+    path: /etc/subuid
+    line: "{{ username }}:{{ subuid_start }}:65536"
+    create: yes
+  when: subuid_check.stdout == ""
+
+# -----------------------------
+# Check if user already exists
+# -----------------------------
+- name: Check subgid entry
+  shell: "grep '^{{ username }}:' /etc/subgid || true"
+  register: subgid_check
+
+# -----------------------------
+# Get last subgid block
+# -----------------------------
+- name: Get last valid subgid entry
+  shell: "awk -F: 'NF==3 {print $0}' /etc/subgid | sort -t: -k2 -n | tail -1"
+  register: subgid_last
+  when: subgid_check.stdout == ""
+
+# -----------------------------
+# Extract subgid if entry exists
+# -----------------------------
+- name: Extract subgid parts
+  set_fact:
+    subgid_parts: "{{ subgid_last.stdout.split(':') }}"
+  when:
+    - subgid_check.stdout == ""
+    - subgid_last.stdout != ""
+
+# -----------------------------
+# Calculate next start
+# -----------------------------
+- name: Calculate next subgid start
+  set_fact:
+    subgid_start: "{{ (subgid_parts[1] | int) + (subgid_parts[2] | int) }}"
+  when:
+    - subgid_check.stdout == ""
+    - subgid_parts is defined
+    - subgid_parts | length >= 3
+
+- name: Set default subgid start
+  set_fact:
+    subgid_start: 100000
+  when:
+    - subgid_check.stdout == ""
+    - subgid_last.stdout == "" or subgid_parts | default([]) | length < 3
+
+# -----------------------------
+# Add subgid entry
+# -----------------------------
+- name: Add subgid entry
+  lineinfile:
+    path: /etc/subgid
+    line: "{{ username }}:{{ subgid_start }}:65536"
+    create: yes
+  when: subgid_check.stdout == ""
+
+
+# -----------------------------
+# Enable linger (idempotent)
+# -----------------------------
+- name: Enable linger
+  command: loginctl enable-linger {{ username }}
+  changed_when: false
+
+# -----------------------------
+# Create directories
+# -----------------------------
+- name: Create required dirs
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ username }}"
+    group: users
+    mode: "0755"
+  loop:
+    - "{{ user_home }}/rootless_docker/bin"
+    - "{{ user_home }}/.config/systemd/user"
+    - "{{ user_home }}/.config/docker"
+
+# -----------------------------
+# Copy binaries/configs
+# -----------------------------
+- name: Copy docker bin
+  copy:
+    src: docker_bin/
+    dest: "{{ user_home }}/rootless_docker/bin/"
+    owner: "{{ username }}"
+    group: users
+    mode: "0755"
+
+- name: Deploy daemon.json
+  template:
+    src: daemon.json.j2
+    dest: "{{ user_home }}/.config/docker/daemon.json"
+    owner: "{{ username }}"
+    group: users
+    mode: "0644"
+  vars:
+    hostname: "{{ host.stdout }}"
+
+# -----------------------------
+# XFS image (safe + idempotent)
+# -----------------------------
+
+- name: Check XFS image (test)
+  shell: "test -f {{ user_xfs_img }}"
+  register: img
+  ignore_errors: true
+
+- name: Create image
+  command: truncate -s {{ xfs_image_size }} {{ user_xfs_img }}
+  when: img.rc != 0
+
+- name: Check filesystem type
+  command: blkid -o value -s TYPE {{ user_xfs_img }}
+  register: fs_type
+  failed_when: false
+  changed_when: false
+
+- name: Format XFS if needed
+  command: mkfs.xfs {{ user_xfs_img }}
+  when: fs_type.stdout != "xfs"
+
+- name: Set permission on XFS image
+  file:
+    path: "{{ user_xfs_img }}"
+    owner: "{{ username }}"
+    group: users
+    mode: "0600"
+
+# -----------------------------
+# Hostname-based dir
+# -----------------------------
+- name: Ensure base docker storage exists (root owned)
+  file:
+    path: /opt/docker_storage
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure user storage dir
+  file:
+    path: "/opt/docker_storage/{{ username }}"
+    state: directory
+    owner: "{{ username }}"
+    group: users
+    mode: "0700"
+
+- name: Ensure xfs_storage dir
+  file:
+    path: "/opt/docker_storage/{{ username }}/xfs_storage"
+    state: directory
+    owner: "{{ username }}"
+    group: users
+    mode: "0700"
+
+- name: Define docker path
+  set_fact:
+    docker_root: "/opt/docker_storage/{{ username }}/xfs_storage/{{ host.stdout }}/docker"
+
+#- name: Ensure mounted
+#  mount:
+#    path: "/opt/docker_storage/{{ username }}/xfs_storage"
+#    src: "{{ user_xfs_img }}"
+#    fstype: xfs
+#    opts: "loop,nofail,x-systemd.automount,noatime"
+#    state: mounted
+
+- name: Create systemd service for XFS mount
+  template:
+    src: xfs-storage.service.j2
+    dest: "/etc/systemd/system/xfs-storage-{{ username }}.service"
+    mode: '0644'
+
+- name: Reload systemd
+  command: systemctl daemon-reload
+
+- name: Enable and start XFS mount service
+  systemd:
+    name: "xfs-storage-{{ username }}"
+    enabled: yes
+    state: started
+
+- name: Check docker dir
+  stat:
+    path: "{{ docker_root }}"
+  register: docker_dir
+
+- name: Fail if exists
+  fail:
+    msg: "Docker directory already exists → {{ docker_root }}"
+  when: docker_dir.stat.exists
+
+- name: Create docker dir
+  file:
+    path: "{{ docker_root }}"
+    state: directory
+    owner: "{{ username }}"
+    group: users
+    mode: "0755"
+
+# -----------------------------
+# PATH export (idempotent)
+# -----------------------------
+
+- name: Add PATH to bashrc (if not present)
+  lineinfile:
+    path: "{{ user_home }}/.bashrc"
+    line: 'export PATH=$HOME/rootless_docker/bin:$PATH'
+    state: present
+    insertafter: EOF
+
+- name: Run rootless docker setup tool
+  become: true
+  become_user: "{{ username }}"
+  shell: |
+    export PATH={{ user_home }}/rootless_docker/bin:$PATH
+    export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+    bash {{ user_home }}/rootless_docker/bin/dockerd-rootless-setuptool.sh install
+  register: setup_output
+
+#- name: Show setup output
+#  debug:
+#    var: setup_output.stdout_lines
+
+- name: Start Docker service  and check the status
+  become: true
+  become_user: "{{ username }}"
+  shell: |
+    export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+    systemctl --user is-active rootless-docker-{{ host.stdout }}.service
+  register: docker_status
+
+- name: Show docker service status
+  debug:
+    msg: "Docker service status: {{ docker_status.stdout }}"
+
+- name: Fail if docker not running
+  fail:
+    msg: "Rootless Docker failed to start for user {{ username }}"
+  when: docker_status.stdout != "active"
+
+# -----------------------------
+# Wait for docker
+# -----------------------------
+- name: Wait for docker
+  become_user: "{{ username }}"
+  retries: 3
+  delay: 2
+  shell: |
+    export PATH={{ user_home }}/rootless_docker/bin:$PATH
+    docker info
+  register: docker_ready
+  until: docker_ready.rc == 0
+  tags:
+    - check_docker
+
+# -----------------------------
+# Idempotent container
+# -----------------------------
+- name: Check nginx container
+  become_user: "{{ username }}"
+  shell: |
+    #export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    export PATH={{ user_home }}/rootless_docker/bin:$PATH
+    docker ps -a --format '{{ "{{.Names}}" }}' | grep -w test-nginx || true
+  register: nginx_exists
+
+- name: Run nginx if not exists
+  become_user: "{{ username }}"
+  shell: |
+    #export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    export PATH={{ user_home }}/rootless_docker/bin:$PATH
+    docker run -d --name test-nginx -p 7777:80 nginx
+  when: nginx_exists.stdout == ""
+
+- name: Wait for nginx to start
+  pause:
+    seconds: 3
+  when: nginx_exists.stdout == ""
+
+- name: Check nginx response
+  become: true
+  become_user: "{{ username }}"
+  shell: |
+    export PATH={{ user_home }}/rootless_docker/bin:$PATH
+    curl -s localhost:7777
+  register: nginx_check
+  retries: 5
+  delay: 2
+  until: nginx_check.rc == 0
+  ignore_errors: true
+
+- name: Cleanup nginx container & image
+  become: true
+  become_user: "{{ username }}"
+  shell: |
+    export PATH={{ user_home }}/rootless_docker/bin:$PATH
+    docker stop test-nginx
+    docker rm -f test-nginx || true
+    docker rm -f test-nginx || true
+  register: nginx_check
+  retries: 5
+  delay: 2
+  until: nginx_check.rc == 0
+  ignore_errors: true
+# -----------------------------
+# Validate docker root dir
+# -----------------------------
+- name: Validate root dir
+  become_user: "{{ username }}"
+  shell: |
+    #export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    export PATH={{ user_home }}/rootless_docker/bin:$PATH
+    docker info | grep "Docker Root Dir"
+  register: root_check
+
+- name: Fail if mismatch
+  fail:
+    msg: "Docker root dir mismatch"
+  when: docker_root not in root_check.stdout
