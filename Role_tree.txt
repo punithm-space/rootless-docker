@@ -1,0 +1,35 @@
+.
+├── defaults
+│   └── main.yml
+├── files
+│   ├── daemon.json
+│   ├── docker_bin
+│   │   ├── containerd
+│   │   ├── containerd-shim-runc-v2
+│   │   ├── ctr
+│   │   ├── docker
+│   │   ├── dockerd
+│   │   ├── dockerd-rootless-setuptool.sh
+│   │   ├── dockerd-rootless.sh
+│   │   ├── docker-init
+│   │   ├── docker-proxy
+│   │   ├── rootlesskit
+│   │   ├── runc
+│   │   └── vpnkit
+│   └── docker.service
+├── handlers
+│   └── main.yml
+├── meta
+│   └── main.yml
+├── README.md
+├── rootless-docker.yaml
+├── tasks
+│   └── main.yml
+├── templates
+│   ├── daemon.json.j2
+│   └── xfs-storage.service.j2
+├── tests
+│   ├── inventory
+│   └── test.yml
+└── vars
+    └── main.yml
